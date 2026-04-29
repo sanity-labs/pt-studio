@@ -157,9 +157,25 @@ const buildBreadcrumb = (s: StudioState): string => {
 const buildStatusBar = (s: StudioState): Block => {
   const flashing = s.flash && Date.now() < s.flashUntil
   const left = ' ' + (flashing ? s.flash : buildBreadcrumb(s))
-  const right = s.editing
-    ? ' ▌ EDITING — Esc to discard ▌ '
-    : ' Tab │ ↑↓ │ Enter / → │ Esc / ← │ E to edit │ Cmd+S to save '
+
+  let right: string
+  if (s.editing && s.editingKind === 'pt') {
+    // While editing PT, show active marks + current block style on the right
+    const t = activeType(s)
+    const docs = docsByType(t.name)
+    const doc = docs[s.listIndex]
+    const blocks = (doc?.values[t.fields[s.formIndex]?.name] as PtBlock[] | undefined) ?? []
+    const block = blocks[s.ptBlockIndex]
+    const styleLabel = block?.listItem
+      ? `list:${block.listItem}`
+      : (block?.style ?? 'normal')
+    const marksLabel = s.ptMarks.length === 0 ? '—' : s.ptMarks.join(',')
+    right = ` ▌ PT EDIT · style=${styleLabel} · marks=[${marksLabel}] · Esc ▌ `
+  } else if (s.editing) {
+    right = ' ▌ EDITING — Esc to discard ▌ '
+  } else {
+    right = ' Tab │ ↑↓ │ Enter / → │ Esc / ← │ E to edit │ Cmd+S to save '
+  }
   const filler = ' '.repeat(Math.max(1, WIDTH - left.length - right.length))
   return mkBlock([
     {text: truncate(left, WIDTH - right.length - 1), kind: flashing ? 'accent' : 'breadcrumb'},
@@ -338,9 +354,12 @@ const formRows = (s: StudioState): {rows: Run[][]; fieldStarts: number[]} => {
     // live edit buffer (with the cursor at editCursor) instead of the
     // stored value.
     const editingThis = sel && focused && s.editing
-    const valueRows = editingThis
+    const ptCursor = editingThis && s.editingKind === 'pt'
+      ? {blockIndex: s.ptBlockIndex, offset: s.ptOffset, visible: s.blinkPhase % 2 === 0}
+      : null
+    const valueRows = editingThis && s.editingKind === 'string'
       ? renderEditBuffer(s.editBuffer, s.editCursor, formW - 6, s.blinkPhase)
-      : renderFieldValue(f, doc, formW - 6, false, s.blinkPhase)
+      : renderFieldValue(f, doc, formW - 6, false, s.blinkPhase, ptCursor)
     for (const vr of valueRows) {
       rows.push([
         {text: '     ', kind: 'fg'},
@@ -435,6 +454,7 @@ const renderFieldValue = (
   width: number,
   editing: boolean,
   blink: number,
+  ptCursor: import('./portableText').CursorAt = null,
 ): Run[][] => {
   const v = doc.values[f.name]
 
@@ -540,7 +560,7 @@ const renderFieldValue = (
         text: '└' + '─'.repeat(w + 2) + '┘',
         kind: 'chrome',
       }
-      const ptRows = renderPortableText(blocks, w)
+      const ptRows = renderPortableText(blocks, w, ptCursor)
       const out: Run[][] = []
       out.push([labelLine])
       for (const ptLine of ptRows) {
