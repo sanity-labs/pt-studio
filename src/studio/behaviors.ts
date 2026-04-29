@@ -1,6 +1,6 @@
 import {defineBehavior, effect} from '@portabletext/editor/behaviors'
 import {SCHEMA} from './schema'
-import {docsByType} from './data'
+import {DOCS, docsByType} from './data'
 import {activeType, type StudioState, type Pane} from './state'
 
 /**
@@ -13,6 +13,7 @@ import {activeType, type StudioState, type Pane} from './state'
  * nothing else returned, so the editor never inserts a character.
  */
 
+// Keys we always intercept (navigation chrome).
 const NAV_KEYS = new Set<string>([
   'Tab',
   'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
@@ -21,6 +22,16 @@ const NAV_KEYS = new Set<string>([
   's', 'S',
   ' ',
 ])
+
+// Field types that hold a single-line string we know how to edit textually.
+// Anything else (image, array, reference, portableText) shows a flash and
+// stays read-only.
+const EDITABLE_KINDS = new Set(['string', 'text', 'slug', 'datetime', 'number'])
+
+const isPrintable = (k: string) =>
+  k.length === 1 &&
+  k.charCodeAt(0) >= 0x20 &&
+  k.charCodeAt(0) !== 0x7f
 
 const PANES: Pane[] = ['tree', 'list', 'form']
 
@@ -34,10 +45,114 @@ const nudge = (s: StudioState) => {
   s.blinkPhase = 0 // reset blink so cursor stays solid right after a keystroke
 }
 
+const enterEditMode = (s: StudioState) => {
+  const t = activeType(s)
+  const docs = docsByType(t.name)
+  const doc = docs[s.listIndex]
+  const f = t.fields[s.formIndex]
+  if (!doc || !f) return false
+  if (!EDITABLE_KINDS.has(f.kind)) {
+    flash(s, `${f.label}: ${f.kind} fields aren't editable in this demo`)
+    return false
+  }
+  const current = doc.values[f.name]
+  s.editBuffer = current === undefined || current === null ? '' : String(current)
+  s.editCursor = s.editBuffer.length
+  s.editing = true
+  flash(s, `Editing ${f.label} — Enter to save · Esc to discard`)
+  return true
+}
+
+const commitEdit = (s: StudioState) => {
+  const t = activeType(s)
+  const docs = docsByType(t.name)
+  const doc = docs[s.listIndex]
+  const f = t.fields[s.formIndex]
+  if (!doc || !f) {
+    s.editing = false
+    return
+  }
+  // Find the doc in the source-of-truth array and mutate it. docsByType
+  // returns sorted views over the same Doc objects, so this in-place mutate
+  // is reflected everywhere.
+  const target = DOCS.find((d) => d._id === doc._id)
+  if (target) {
+    target.values[f.name] = f.kind === 'number' ? Number(s.editBuffer) : s.editBuffer
+    target.updatedAt = new Date().toISOString()
+    if (target.status === 'published') target.status = 'changed'
+  }
+  s.editing = false
+  flash(s, `✓ ${f.label} saved`)
+}
+
 export const makeStudioBehaviors = (stateRef: {current: StudioState}) => {
+  // Keystrokes that drive an in-progress edit. Captured on a separate
+  // behavior so we can keep the priority guard tight: only fire when
+  // editing, only forward the key into the buffer.
+  const onEditKeydown = defineBehavior({
+    on: 'keyboard.keydown',
+    guard: ({event}) => {
+      if (!stateRef.current.editing) return false
+      const k = event.originEvent.key
+      // Special editing keys
+      if (k === 'Backspace' || k === 'Delete' || k === 'Home' || k === 'End') return true
+      if (k === 'ArrowLeft' || k === 'ArrowRight') return true
+      if (k === 'Enter' || k === 'Escape') return true
+      if (event.originEvent.metaKey || event.originEvent.ctrlKey || event.originEvent.altKey) return false
+      // Printable characters
+      return isPrintable(k)
+    },
+    actions: [
+      ({event}) => [
+        effect(() => {
+          const s = stateRef.current
+          const k = event.originEvent.key
+          nudge(s)
+          if (k === 'Escape') {
+            s.editing = false
+            flash(s, 'Discarded edit')
+            return
+          }
+          if (k === 'Enter') {
+            commitEdit(s)
+            return
+          }
+          if (k === 'Backspace') {
+            if (s.editCursor > 0) {
+              s.editBuffer = s.editBuffer.slice(0, s.editCursor - 1) + s.editBuffer.slice(s.editCursor)
+              s.editCursor--
+            }
+            return
+          }
+          if (k === 'Delete') {
+            if (s.editCursor < s.editBuffer.length) {
+              s.editBuffer = s.editBuffer.slice(0, s.editCursor) + s.editBuffer.slice(s.editCursor + 1)
+            }
+            return
+          }
+          if (k === 'ArrowLeft') {
+            s.editCursor = Math.max(0, s.editCursor - 1)
+            return
+          }
+          if (k === 'ArrowRight') {
+            s.editCursor = Math.min(s.editBuffer.length, s.editCursor + 1)
+            return
+          }
+          if (k === 'Home') { s.editCursor = 0; return }
+          if (k === 'End') { s.editCursor = s.editBuffer.length; return }
+          // Printable: insert at cursor
+          if (isPrintable(k)) {
+            s.editBuffer = s.editBuffer.slice(0, s.editCursor) + k + s.editBuffer.slice(s.editCursor)
+            s.editCursor += k.length
+          }
+        }),
+      ],
+    ],
+  })
+
   const onKeyDown = defineBehavior({
     on: 'keyboard.keydown',
-    guard: ({event}) => NAV_KEYS.has(event.originEvent.key),
+    guard: ({event}) => !stateRef.current.editing && NAV_KEYS.has(event.originEvent.key),
     actions: [
       ({event}) => [
         effect(() => {
@@ -50,16 +165,6 @@ export const makeStudioBehaviors = (stateRef: {current: StudioState}) => {
           // Cmd+S → faux-save flash
           if ((key === 's' || key === 'S') && meta) {
             flash(s, '✓ Saved (faux — this is a mocked studio)')
-            return
-          }
-
-          if (s.editing) {
-            if (key === 'Escape') {
-              s.editing = false
-              flash(s, 'Discarded edit')
-            }
-            // All other keys are consumed but do nothing — we don't actually
-            // mutate the underlying value in the demo.
             return
           }
 
@@ -105,10 +210,7 @@ export const makeStudioBehaviors = (stateRef: {current: StudioState}) => {
               if (doc) flash(s, `Opened ${doc.values.title || doc.values.name || doc._id}`)
             } else {
               // already in the form — Enter starts edit mode
-              if (key === 'Enter') {
-                s.editing = true
-                flash(s, 'Editing — Esc to discard')
-              }
+              if (key === 'Enter') enterEditMode(s)
             }
             return
           }
@@ -125,8 +227,7 @@ export const makeStudioBehaviors = (stateRef: {current: StudioState}) => {
 
           // E to enter edit mode from anywhere in the form pane
           if ((key === 'e' || key === 'E') && s.activePane === 'form') {
-            s.editing = true
-            flash(s, 'Editing — Esc to discard')
+            enterEditMode(s)
             return
           }
         }),
@@ -134,20 +235,19 @@ export const makeStudioBehaviors = (stateRef: {current: StudioState}) => {
     ],
   })
 
-  // Belt-and-braces: the editor would otherwise treat 'e', 'E', 's', etc.
-  // as text input. We swallow any single-char insert that maps to a nav
-  // key, so the editor never accumulates content.
+  // Belt-and-braces: any single-char insert is dropped on the floor. The
+  // edit buffer doesn't go through the editor's value, so we never want
+  // the editor to actually mutate its own document. (When editing, our
+  // onEditKeydown beat already consumed the keydown — the insert.text
+  // event won't fire — but if it slips through, we still drop it.)
   const blockTextInput = defineBehavior({
     on: 'insert.text',
-    guard: ({event}) => {
-      if (event.text.length !== 1) return false
-      const k = event.text
-      return NAV_KEYS.has(k) || NAV_KEYS.has(k.toLowerCase())
-    },
+    guard: ({event}) => event.text.length > 0,
     actions: [() => [effect(() => {})]],
   })
 
-  // Block break/soft break (Enter in editor world)
+  // Block break / soft break — Enter never inserts a paragraph break in
+  // the studio document.
   const blockBreak = defineBehavior({
     on: 'insert.break',
     guard: () => true,
@@ -159,7 +259,7 @@ export const makeStudioBehaviors = (stateRef: {current: StudioState}) => {
     actions: [() => [effect(() => {})]],
   })
 
-  return [onKeyDown, blockTextInput, blockBreak, blockSoftBreak]
+  return [onEditKeydown, onKeyDown, blockTextInput, blockBreak, blockSoftBreak]
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))

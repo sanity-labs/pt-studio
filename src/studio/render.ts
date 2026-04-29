@@ -302,8 +302,13 @@ const formRows = (s: StudioState): Run[][] => {
       {text: ' ', kind: 'chrome'},
     ])
 
-    // Value row(s)
-    const valueRows = renderFieldValue(f, doc, formW - 6, sel && focused && s.editing, s.blinkPhase)
+    // Value row(s). When this field is the active edit target, render the
+    // live edit buffer (with the cursor at editCursor) instead of the
+    // stored value.
+    const editingThis = sel && focused && s.editing
+    const valueRows = editingThis
+      ? renderEditBuffer(s.editBuffer, s.editCursor, formW - 6, s.blinkPhase)
+      : renderFieldValue(f, doc, formW - 6, false, s.blinkPhase)
     for (const vr of valueRows) {
       rows.push([
         {text: '     ', kind: 'fg'},
@@ -335,6 +340,62 @@ const cursor = (blink: number): Run => ({
   text: blink % 2 === 0 ? '▌' : ' ',
   kind: 'cursor',
 })
+
+// Render an in-progress edit buffer with the cursor inserted at the right
+// offset. Wraps to the column width so long values stay readable.
+const renderEditBuffer = (
+  buffer: string,
+  cursorIdx: number,
+  width: number,
+  blink: number,
+): Run[][] => {
+  const before = buffer.slice(0, cursorIdx)
+  const after = buffer.slice(cursorIdx)
+  const cur = cursor(blink)
+
+  // We need to wrap at `width`, but cursor lives between two chars rather
+  // than as a chunk. Simplest correct approach: render before+cursor+after
+  // as a single logical sequence, then fold into lines.
+  type Atom = {ch: string; kind: 'fg' | 'cursor'}
+  const atoms: Atom[] = []
+  for (const ch of before) atoms.push({ch, kind: 'fg'})
+  // Use the blink phase so the cursor visibly pulses while typing
+  atoms.push({ch: cur.text, kind: 'cursor'})
+  for (const ch of after) atoms.push({ch, kind: 'fg'})
+
+  const out: Run[][] = []
+  let line: Run[] = []
+  let lineLen = 0
+  let pendingKind: 'fg' | 'cursor' | null = null
+  let pendingText = ''
+  const flush = () => {
+    if (pendingKind && pendingText) {
+      line.push({text: pendingText, kind: pendingKind})
+      pendingKind = null
+      pendingText = ''
+    }
+  }
+  for (const a of atoms) {
+    if (lineLen >= width) {
+      flush()
+      out.push(line)
+      line = []
+      lineLen = 0
+    }
+    if (pendingKind === a.kind) {
+      pendingText += a.ch
+    } else {
+      flush()
+      pendingKind = a.kind
+      pendingText = a.ch
+    }
+    lineLen++
+  }
+  flush()
+  if (line.length === 0) line = [{text: '', kind: 'fg'}]
+  out.push(line)
+  return out
+}
 
 const renderFieldValue = (
   f: Field,
