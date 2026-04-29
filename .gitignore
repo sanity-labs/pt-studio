@@ -1,0 +1,10 @@
+node_modules
+dist
+.DS_Store
+.vercel
+.vite
+.env
+.env.local
+*.log
+*.tsbuildinfo
+src/**/*.js
