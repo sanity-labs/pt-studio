@@ -118,8 +118,10 @@ const Q2_BODY: PtBlock[] = [
 
 const EOIN_BIO: PtBlock[] = [
   {_type: 'block', style: 'normal', children: [
-    {_type: 'span', text: 'EM on Content Apps. Builds the studio you’re looking at right now (yes, the ASCII one). Previously '},
-    {_type: 'span', text: 'iqval.no', marks: ['link']},
+    {_type: 'span', text: 'Director of Engineering '},
+    {_type: 'span', text: '@ Sanity', marks: ['strong']},
+    {_type: 'span', text: '. Based in Oslo, Norway. Builds the studio you’re looking at right now (yes, the ASCII one). Writes occasionally at '},
+    {_type: 'span', text: 'medium.com/@eoin.falconer', marks: ['link']},
     {_type: 'span', text: '.'},
   ]},
 ]
@@ -260,7 +262,7 @@ export const DOCS: Doc[] = [
     updatedAt: iso('2026-02-04T10:00:00Z'),
     values: {
       name: 'Eoin Falconer',
-      role: 'Engineering Manager, Content Apps',
+      role: 'Director of Engineering @ Sanity',
       avatar: 'image-avatar-eoin',
       bio: EOIN_BIO,
       bluesky: '@eoin.bsky.social',
