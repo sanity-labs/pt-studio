@@ -400,13 +400,14 @@ const renderFieldValue = (
         const t = docById(String(id))
         return t ? String(t.values.title || t.values.name || t._id) : String(id)
       })
-      return [
-        [{text: `${arr.length} items`, kind: 'accent'}],
-        ...items.slice(0, 4).map((it) => [
-          {text: '  • ', kind: 'muted'} as Run,
+      const out: Run[][] = [[{text: `${arr.length} items`, kind: 'accent'}]]
+      for (const it of items.slice(0, 4)) {
+        out.push([
+          {text: '  • ', kind: 'muted'},
           {text: truncate(it, width - 4), kind: 'fg'},
-        ]),
-      ]
+        ])
+      }
+      return out
     }
 
     case 'image':
