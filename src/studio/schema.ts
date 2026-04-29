@@ -77,7 +77,7 @@ export const SCHEMA: DocType[] = [
       {name: 'role', label: 'Role', kind: 'string'},
       {name: 'avatar', label: 'Avatar', kind: 'image'},
       {name: 'bio', label: 'Bio', kind: 'portableText', full: true},
-      {name: 'twitter', label: 'Twitter handle', kind: 'string'},
+      {name: 'bluesky', label: 'Bluesky handle', kind: 'string'},
     ],
   },
   {

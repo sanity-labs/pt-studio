@@ -110,6 +110,13 @@ body {
 .d-crumb   { color: var(--breadcrumb); }
 .d-editBan { color: var(--edit-banner); background: rgba(255, 224, 102, 0.08); }
 
+/* PTE-in-PTE styling */
+.d-ptH { color: #ffd09c; font-weight: 700; letter-spacing: 0.04em; }
+.d-ptQ { color: #ffaa66; }
+.d-ptC { color: #6bff9a; background: rgba(107, 255, 154, 0.07); padding: 0 2px; border-radius: 2px; }
+.d-ptL { color: #66c8ff; text-decoration: underline; text-decoration-color: rgba(102, 200, 255, 0.45); }
+.d-imgPx { color: #f0a87a; }
+
 @keyframes blink {
   to { opacity: 0; }
 }

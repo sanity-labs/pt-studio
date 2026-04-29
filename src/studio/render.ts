@@ -1,6 +1,8 @@
 import {SCHEMA, type DocType, type Field} from './schema'
 import {docsByType, docById, type Doc} from './data'
 import {activeType, type StudioState, type Pane} from './state'
+import {findImage} from './images'
+import {renderPortableText, type PtBlock, type PtRun} from './portableText'
 
 // Layout constants — fixed-width terminal so every block is exactly WIDTH wide.
 export const WIDTH = 110
@@ -24,6 +26,12 @@ type CellKind =
   | 'status-changed'
   | 'breadcrumb'
   | 'edit-banner'
+  // ── PT-in-PT styling ────────────────────────────────────────────────
+  | 'pt-heading'
+  | 'pt-quote'
+  | 'pt-code'
+  | 'pt-link'
+  | 'image-pixel'
 
 type Run = {text: string; kind: CellKind}
 
@@ -54,6 +62,25 @@ const markForKind = (k: CellKind): string[] => {
     case 'status-changed': return ['statusC']
     case 'breadcrumb': return ['crumb']
     case 'edit-banner': return ['editBan']
+    case 'pt-heading': return ['ptH']
+    case 'pt-quote': return ['ptQ']
+    case 'pt-code': return ['ptC']
+    case 'pt-link': return ['ptL']
+    case 'image-pixel': return ['imgPx']
+  }
+}
+
+// Map PT renderer kinds (which don't know about studio chrome) to our cell kinds.
+const ptKindToCellKind = (k: PtRun['kind']): CellKind => {
+  switch (k) {
+    case 'fg': return 'fg'
+    case 'muted': return 'muted'
+    case 'accent': return 'accent'
+    case 'cursor': return 'cursor'
+    case 'h': return 'pt-heading'
+    case 'quote': return 'pt-quote'
+    case 'code-bg': return 'pt-code'
+    case 'link': return 'pt-link'
   }
 }
 
@@ -253,19 +280,23 @@ const listRows = (s: StudioState): Run[][] => {
 // Form pane (right)
 // ──────────────────────────────────────────────────────────────────────
 
-const formRows = (s: StudioState): Run[][] => {
+// Returns the rendered rows plus, for each field, the row index where its
+// label starts. The caller uses these offsets to scroll the form pane so
+// the focused field is always in view.
+const formRows = (s: StudioState): {rows: Run[][]; fieldStarts: number[]} => {
   const focused = s.activePane === 'form'
   const t = activeType(s)
   const docs = docsByType(t.name)
   const doc = docs[s.listIndex]
   const formW = WIDTH - COL_TREE - COL_LIST
   const rows: Run[][] = []
+  const fieldStarts: number[] = []
 
   if (!doc) {
     rows.push([{text: pad(' DOCUMENT', formW - 1), kind: 'title'}, {text: ' ', kind: 'chrome'}])
     rows.push([{text: pad('', formW - 1), kind: 'chrome'}, {text: ' ', kind: 'chrome'}])
     rows.push([{text: pad('  No document selected.', formW - 1), kind: 'muted'}, {text: ' ', kind: 'chrome'}])
-    return rows
+    return {rows, fieldStarts}
   }
 
   const sg = statusGlyph(doc.status)
@@ -287,6 +318,7 @@ const formRows = (s: StudioState): Run[][] => {
 
   // Fields
   for (let i = 0; i < t.fields.length; i++) {
+    fieldStarts[i] = rows.length
     const f = t.fields[i]
     const sel = i === s.formIndex
     const indicator = sel ? (focused ? '▶' : '▷') : ' '
@@ -330,7 +362,7 @@ const formRows = (s: StudioState): Run[][] => {
     rows.push([{text: pad('', formW - 1), kind: 'chrome'}, {text: ' ', kind: 'chrome'}])
   }
 
-  return rows
+  return {rows, fieldStarts}
 }
 
 const runWidth = (runs: Run[]): number =>
@@ -471,46 +503,65 @@ const renderFieldValue = (
       return out
     }
 
-    case 'image':
-      return [[
-        {text: '┌──────┐ ', kind: 'chrome'},
-        {text: String(v ?? '(no image)'), kind: v ? 'fg' : 'muted'},
-      ], [
-        {text: '│ ░▓░▓ │ ', kind: 'chrome'},
-        {text: '1920 × 1080  ·  jpg  ·  342 kB', kind: 'muted'},
-      ], [
-        {text: '└──────┘', kind: 'chrome'},
-      ]]
+    case 'image': {
+      const img = findImage(v)
+      if (!img) {
+        return [[{text: '(no image set)', kind: 'muted'}]]
+      }
+      const out: Run[][] = []
+      // Top border sized to the image
+      const top = '┌' + '─'.repeat(img.width) + '┐'
+      out.push([{text: top, kind: 'chrome'}])
+      for (const r of img.rows) {
+        out.push([
+          {text: '│', kind: 'chrome'},
+          {text: pad(r, img.width), kind: 'image-pixel'},
+          {text: '│', kind: 'chrome'},
+        ])
+      }
+      const bot = '└' + '─'.repeat(img.width) + '┘'
+      out.push([{text: bot, kind: 'chrome'}])
+      out.push([{text: img.meta, kind: 'muted'}])
+      return out
+    }
 
     case 'portableText': {
-      // It's a portable-text field rendered inside another portable-text
-      // field. Yes. Render a faux-block summary that fits in the column.
-      const w = Math.max(20, width)
-      const dashes = (n: number) => '─'.repeat(Math.max(0, n))
-      const labelLine = (label: string): Run => ({
-        text: '┌─ ' + label + ' ' + dashes(w - 5 - label.length) + '┐',
-        kind: 'chrome',
-      })
-      const innerLine = (text: string): Run[] => {
-        const inner = ' ' + truncate(text, w - 4) + ' '
-        return [
-          {text: '│', kind: 'chrome'},
-          {text: pad(inner, w - 2), kind: 'fg'},
-          {text: '│', kind: 'chrome'},
-        ]
+      const blocks = Array.isArray(v) ? (v as PtBlock[]) : []
+      if (blocks.length === 0) {
+        return [[{text: '(empty body)', kind: 'muted'}]]
       }
-      const closeLine: Run = {text: '└' + dashes(w - 2) + '┘', kind: 'chrome'}
-      return [
-        [labelLine('block')],
-        innerLine('Lorem ipsum dolor sit amet, consectetur adipiscing'),
-        innerLine('elit. Sed do eiusmod tempor incididunt ut labore.'),
-        [closeLine],
-        [labelLine('list')],
-        innerLine('• First bullet — making the case for ASCII'),
-        innerLine('• Second bullet — Portable Text is just data'),
-        [closeLine],
-        [{text: '4 blocks · 218 words · last edited just now', kind: 'muted'}],
-      ]
+      // Render the PT inside a soft frame so it reads as "this is a PTE field"
+      const w = Math.max(20, width - 2)
+      const labelLine: Run = {
+        text: '┌─ portable text ' + '─'.repeat(Math.max(0, w + 2 - 17)) + '┐',
+        kind: 'chrome',
+      }
+      const closeLine: Run = {
+        text: '└' + '─'.repeat(w + 2) + '┘',
+        kind: 'chrome',
+      }
+      const ptRows = renderPortableText(blocks, w)
+      const out: Run[][] = []
+      out.push([labelLine])
+      for (const ptLine of ptRows) {
+        const runs: Run[] = ptLine.map((r) => ({text: r.text, kind: ptKindToCellKind(r.kind)}))
+        const used = runs.reduce((acc, r) => acc + [...r.text].length, 0)
+        out.push([
+          {text: '│ ', kind: 'chrome'},
+          ...runs,
+          {text: pad('', Math.max(0, w - used)), kind: 'fg'},
+          {text: ' │', kind: 'chrome'},
+        ])
+      }
+      out.push([closeLine])
+      const blockCount = blocks.length
+      const wordCount = blocks
+        .flatMap((b) => b.children?.map((c) => c.text) ?? [])
+        .join(' ')
+        .split(/\s+/)
+        .filter(Boolean).length
+      out.push([{text: `${blockCount} blocks · ${wordCount} words · last edited just now`, kind: 'muted'}])
+      return out
     }
 
     case 'boolean':
@@ -572,8 +623,29 @@ export const renderStudio = (s: StudioState): Block[] => {
 
   const tree = treeRows(s)
   const list = listRows(s)
-  const form = formRows(s)
-  const composed = composeRows(tree, list, form, HEIGHT - 2)
+  const {rows: formAll, fieldStarts} = formRows(s)
+  // Auto-scroll: keep the focused field's start row inside the viewport.
+  const viewport = HEIGHT - 2
+  const targetStart = fieldStarts[s.formIndex] ?? 0
+  let scroll = s.formScroll
+  if (s.activePane === 'form' || s.editing) {
+    const margin = 2
+    if (targetStart < scroll + margin) scroll = Math.max(0, targetStart - margin)
+    // bias down enough that the field's first ~3 rows are visible
+    const bottomLimit = scroll + viewport - 4
+    if (targetStart > bottomLimit) scroll = Math.max(0, targetStart - viewport + 6)
+    scroll = Math.min(scroll, Math.max(0, formAll.length - viewport))
+  }
+  s.formScroll = scroll
+  const form = formAll.slice(scroll, scroll + viewport)
+  // Pad to the viewport so compose doesn't try to fall back to blanks oddly.
+  while (form.length < viewport) {
+    form.push([
+      {text: pad('', WIDTH - COL_TREE - COL_LIST - 1), kind: 'chrome'},
+      {text: ' ', kind: 'chrome'},
+    ])
+  }
+  const composed = composeRows(tree, list, form, viewport)
   for (const row of composed) blocks.push(mkBlock(row))
 
   // Bottom separator
